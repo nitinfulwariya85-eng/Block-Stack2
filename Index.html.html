@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>Block Stack</title>
+    <link rel="icon" href="icon_512.png" />
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;700;900&display=swap');
+    </style>
+
+    <style>
+        :root {
+            --ui-text: #ffffff;
+            --ui-dim: rgba(255,255,255,0.58);
+            --ui-soft: rgba(255,255,255,0.15);
+            --ui-bg: rgba(0,0,0,0.65);
+            --glow-strong: 0 0 30px rgba(255,255,255,0.55);
+            --glow-soft: 0 0 18px rgba(255,255,255,0.35);
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: "Inter", sans-serif;
+            background: #000;
+            overflow: hidden;
+            color: var(--ui-text);
+            touch-action: manipulation;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #gameContainer { position: fixed; inset: 0; background:#000; overflow:hidden; z-index:1; }
+        canvas { position:absolute; inset:0; width:100vw; height:100vh; display:block; }
+        #scoreDisplay {
+            position: fixed; top: 24px; width:100%; text-align:center;
+            font-size:54px; font-weight:900; color:#fff; text-shadow:0 0 18px #fff4;
+            z-index:10; pointer-events:none;
+        }
+        #comboBarContainer {
+            position: fixed; top: 90px; left:50%; transform:translateX(-50%);
+            width:180px; height:10px; background:rgba(255,255,255,0.12);
+            border-radius:40px; overflow:hidden; z-index:10;
+        }
+        #comboBarFill {
+            width:0%; height:100%;
+            background:linear-gradient(90deg,#7af,#b9f,#f6f);
+            transition:width 0.18s ease;
+        }
+        .perfect-popup {
+            position:fixed; left:50%; transform:translateX(-50%);
+            font-size:26px; font-weight:800; color:#fff;
+            text-shadow:0 0 30px #fff8; opacity:0;
+            animation: perfectPop 1s forwards; pointer-events:none; z-index:12;
+        }
+        @keyframes perfectPop {
+            0% { transform:translate(-50%,18px) scale(0.7); opacity:0; }
+            15% { opacity:1; transform:translate(-50%,-10px) scale(1.2); }
+            100% { opacity:0; transform:translate(-50%,-40px) scale(1.0); }
+        }
+        #milestoneBanner {
+            position:fixed; top:42%; width:100%; text-align:center;
+            font-size:44px; font-weight:900; opacity:0; color:#fff;
+            text-shadow:0 0 30px #fff8; pointer-events:none; z-index:30;
+        }
+        @keyframes bannerShow {
+            0% { opacity:0; transform:scale(0.65); }
+            18% { opacity:1; transform:scale(1.05); }
+            100% { opacity:0; transform:scale(1.0); }
+        }
+        #gameOverScreen {
+            position:fixed; inset:0; background:rgba(0,0,0,0.6);
+            backdrop-filter:blur(8px); color:#fff; font-size:32px;
+            display:flex; flex-direction:column; align-items:center;
+            justify-content:center; opacity:0; pointer-events:none; z-index:20;
+            transition:opacity 0.35s ease;
+        }
+        #gameOverScreen.visible { opacity:1; pointer-events:auto; }
+        #gameOverScreen .sub { margin-top:10px; font-size:22px; opacity:0.8; }
+        #gameOverScreen .restart { margin-top:22px; font-size:26px; opacity:0.85; }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.176.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.176.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+
+<div id="gameContainer"></div>
+<div id="scoreDisplay">0</div>
+<div id="comboBarContainer"><div id="comboBarFill"></div></div>
+<div id="milestoneBanner"></div>
+<div id="gameOverScreen">
+    <div>Game Over</div>
+    <div class="sub" id="finalScoreText">Score: 0</div>
+    <div class="restart">Tap to Restart</div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+
+//
+// =====================================================
+// PREMIUM GAME ENGINE CONFIGURATION
+// =====================================================
+//
+
+
+const BLOCK_HEIGHT = 2;
+const INITIAL_SIZE = 10;
+const INITIAL_SPEED = 0.12;
+const PERFECT_EPSILON = 0.05;
+const SPEED_STEP = 0.028;
+const SPEED_EVERY = 7;
+const CAMERA_OFFSET_Y = 18;
+const CAMERA_OFFSET_Z = 22;
+
+let scene, camera, renderer;
+let blocks = [];
+let cutPieces = [];
+let active = null;
+let direction = 1;
+let moveAxis = "x";
+let blockSpeed = INITIAL_SPEED;
+let score = 0;
+let highScore = 0;
+let perfectStreak = 0;
+let comboBar = 0;
+let comboMax = 5;
+
+//
+// UI elements
+//
+const scoreDisplay = document.getElementById("scoreDisplay");
+const comboBarFill = document.getElementById("comboBarFill");
+const milestoneBanner = document.getElementById("milestoneBanner");
+const gameOverScreen = document.getElementById("gameOverScreen");
+const finalScoreText = document.getElementById("finalScoreText");
+
+//
+// =====================================================
+// AUDIO (stack + lose + perfect chime)
+// =====================================================
+//
+
+const stackAudio = new Audio("sounds/game-start-317318.mp3");
+const loseAudio = new Audio("sounds/wood_thump.wav");
+
+// Perfect chime (generated)
+function playPerfectChime() {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.25);
+}
+
+//
+// =====================================================
+// SCORE & UI
+// =====================================================
+//
+
+function updateScoreUI() {
+    scoreDisplay.innerText = score;
+}
+
+function showMilestone(n) {
+    milestoneBanner.innerText = n + " STACKS!";
+    milestoneBanner.style.animation = "none";
+    void milestoneBanner.offsetWidth;
+    milestoneBanner.style.animation = "bannerShow 1.4s forwards";
+}
+
+function showPerfectPopup() {
+    const div = document.createElement("div");
+    div.className = "perfect-popup";
+    div.style.top = "52%";
+    div.innerText = "PERFECT!";
+    document.body.appendChild(div);
+    setTimeout(() => div.remove(), 900);
+}
+
+//
+// =====================================================
+// THREE.JS SCENE SETUP
+// =====================================================
+//
+
+function setupThree() {
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = false;
+    document.getElementById("gameContainer").appendChild(renderer.domElement);
+
+    scene = new THREE.Scene();
+
+    const aspect = window.innerWidth / 32;
+    camera = new THREE.OrthographicCamera(
+        -aspect,
+        aspect,
+        window.innerHeight / 32,
+        -window.innerHeight / 32,
+        0.1,
+        1000
+    );
+    camera.position.set(18, CAMERA_OFFSET_Y, CAMERA_OFFSET_Z);
+    camera.lookAt(0, 0, 0);
+    scene.add(camera);
+
+    // Ambient & directional light
+    const aLight = new THREE.AmbientLight(0xffffff, 0.83);
+    scene.add(aLight);
+
+    const dLight = new THREE.DirectionalLight(0xffffff, 0.92);
+    dLight.position.set(12, 40, 16);
+    scene.add(dLight);
+
+    window.addEventListener("resize", resize);
+    renderer.domElement.addEventListener("pointerdown", input);
+    // Allow tapping the visible game-over overlay to restart the game
+    gameOverScreen.addEventListener("pointerdown", (e) => {
+        if (gameOverScreen.classList.contains("visible")) input();
+    });
+}
+
+function resize() {
+    camera.left = window.innerWidth / -32;
+    camera.right = window.innerWidth / 32;
+    camera.top = window.innerHeight / 32;
+    camera.bottom = window.innerHeight / -32;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+//
+// =====================================================
+// BLOCK + PARTICLES
+// =====================================================
+//
+
+function blockColor(index) {
+    const t = index / 30;
+    const c = new THREE.Color();
+    c.setHSL(0.55 + t * 0.3, 0.65, 0.58 - t * 0.2);
+    return c.getHex();
+}
+
+function createBlock(w, d, y, color, x = 0, z = 0, emissive = false) {
+    const geo = new THREE.BoxGeometry(w, BLOCK_HEIGHT, d);
+    const mat = new THREE.MeshLambertMaterial({
+        color: color,
+        emissive: emissive ? 0xffffff : 0x000000,
+        emissiveIntensity: emissive ? 0.25 : 0
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    return mesh;
+}
+
+function spawnSparks(x, y, z) {
+    for (let i = 0; i < 10; i++) {
+        const g = new THREE.SphereGeometry(0.12, 6, 6);
+        const m = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const p = new THREE.Mesh(g, m);
+        p.position.set(x, y, z);
+        p.userData.vx = (Math.random() - 0.5) * 0.3;
+        p.userData.vy = Math.random() * 0.4;
+        p.userData.vz = (Math.random() - 0.5) * 0.3;
+        p.userData.life = 0.7;
+        scene.add(p);
+        cutPieces.push(p);
+    }
+}
+
+//
+// =====================================================
+// GAME FLOW
+// =====================================================
+//
+
+function startGame() {
+    blocks.forEach(b => scene.remove(b.mesh));
+    cutPieces.forEach(c => scene.remove(c));
+    blocks = [];
+    cutPieces = [];
+    active = null;
+    direction = 1;
+    moveAxis = "x";
+    blockSpeed = INITIAL_SPEED;
+    score = 0;
+    perfectStreak = 0;
+    comboBar = 0;
+    comboBarFill.style.width = "0%";
+    updateScoreUI();
+    gameOverScreen.classList.remove("visible");
+
+    spawnBase();
+    spawnBlock();
+}
+
+function spawnBase() {
+    const mesh = createBlock(INITIAL_SIZE, INITIAL_SIZE, BLOCK_HEIGHT / 2, blockColor(0));
+    scene.add(mesh);
+    blocks.push({
+        mesh: mesh,
+        w: INITIAL_SIZE,
+        d: INITIAL_SIZE,
+        x: 0,
+        z: 0,
+        y: BLOCK_HEIGHT / 2
+    });
+}
+
+function spawnBlock() {
+    const prev = blocks[blocks.length - 1];
+    const color = blockColor(blocks.length);
+    const y = prev.y + BLOCK_HEIGHT;
+    let x = prev.x, z = prev.z;
+
+    if (moveAxis === "x") x = -18 * direction;
+    else z = -18 * direction;
+
+    // Create the mesh at the computed starting x/z so it does not snap to center
+    const mesh = createBlock(prev.w, prev.d, y, color, x, z);
+    scene.add(mesh);
+
+    active = {
+        mesh,
+        w: prev.w,
+        d: prev.d,
+        x,
+        z,
+        y,
+        speed: blockSpeed,
+        axis: moveAxis,
+        dir: direction,
+        state: "slide"
+    };
+}
+
+function dropBlock() {
+    if (!active || active.state !== "slide") return;
+
+    const prev = blocks[blocks.length - 1];
+    let overlap, offset;
+
+    if (active.axis === "x") {
+        offset = active.x - prev.x;
+        overlap = active.w - Math.abs(offset);
+    } else {
+        offset = active.z - prev.z;
+        overlap = active.d - Math.abs(offset);
+    }
+
+    const perfect = Math.abs(offset) < PERFECT_EPSILON;
+
+    if (overlap <= 0) {
+        return gameOver();
+    }
+
+    //
+    // PERFECT PLACEMENT
+    //
+    if (perfect) {
+        perfectStreak++;
+        comboBar = Math.min(comboBar + 1, comboMax);
+        comboBarFill.style.width = ((comboBar / comboMax) * 100) + "%";
+
+        active.mesh.material.emissiveIntensity = 0.55;
+        showPerfectPopup();
+        playPerfectChime();
+        cameraPunch();
+
+        spawnSparks(prev.x, prev.y + 1, prev.z);
+    } else {
+        perfectStreak = 0;
+        comboBar = Math.max(0, comboBar - 1);
+        comboBarFill.style.width = ((comboBar / comboMax) * 100) + "%";
+
+        spawnCutpiece(active, offset);
+    }
+
+    //
+    // update block size
+    //
+    if (active.axis === "x") {
+        active.w = overlap;
+        active.x = prev.x + offset / 2;
+    } else {
+        active.d = overlap;
+        active.z = prev.z + offset / 2;
+    }
+
+    active.mesh.scale.set(
+        active.w / active.mesh.geometry.parameters.width,
+        1,
+        active.d / active.mesh.geometry.parameters.depth
+    );
+    active.mesh.position.set(active.x, active.y, active.z);
+
+    blocks.push({
+        mesh: active.mesh,
+        w: active.w,
+        d: active.d,
+        x: active.x,
+        z: active.z,
+        y: active.y
+    });
+
+    active = null;
+    score++;
+    updateScoreUI();
+
+    // milestones
+    if ([10, 25, 50, 100, 150, 200].includes(score)) showMilestone(score);
+
+    // speed progression
+    if (score % SPEED_EVERY === 0) blockSpeed += SPEED_STEP;
+
+    direction *= -1;
+    moveAxis = moveAxis === "x" ? "z" : "x";
+
+    // audio with pitch shift
+    stackAudio.playbackRate = 1 + Math.random() * 0.3;
+    stackAudio.play();
+
+    setTimeout(spawnBlock, 130);
+}
+
+function spawnCutpiece(block, offset) {
+    const small = Math.abs(offset);
+
+    const w = block.axis === "x" ? small : block.w;
+    const d = block.axis === "z" ? small : block.d;
+    const x = block.axis === "x"
+        ? block.x + (offset > 0 ? block.w / 2 + w / 2 : -(block.w / 2 + w / 2))
+        : block.x;
+    const z = block.axis === "z"
+        ? block.z + (offset > 0 ? block.d / 2 + d / 2 : -(block.d / 2 + d / 2))
+        : block.z;
+
+    const mesh = createBlock(w, d, block.y, 0xffffff);
+    mesh.position.set(x, block.y, z);
+    scene.add(mesh);
+
+    mesh.userData.vx = block.axis === "x" ? (offset > 0 ? 0.22 : -0.22) : 0;
+    mesh.userData.vz = block.axis === "z" ? (offset > 0 ? 0.22 : -0.22) : 0;
+    mesh.userData.vy = -0.35;
+    mesh.userData.life = 2;
+    cutPieces.push(mesh);
+}
+
+function cameraPunch() {
+    camera.position.y -= 0.6;
+    setTimeout(() => {
+        camera.position.y += 0.6;
+    }, 90);
+}
+
+function gameOver() {
+    loseAudio.play();
+    finalScoreText.innerText = "Score: " + score;
+    gameOverScreen.classList.add("visible");
+
+    if (score > highScore) highScore = score;
+}
+
+function input() {
+    if (!active && !gameOverScreen.classList.contains("visible")) return;
+    if (gameOverScreen.classList.contains("visible")) {
+        startGame();
+    } else {
+        dropBlock();
+    }
+}
+
+//
+// =====================================================
+// ANIMATION LOOP
+// =====================================================
+//
+
+function updatePieces(dt) {
+    for (let i = cutPieces.length - 1; i >= 0; i--) {
+        const p = cutPieces[i];
+        p.position.x += p.userData.vx;
+        p.position.y += p.userData.vy;
+        p.position.z += p.userData.vz;
+        p.userData.vy -= 0.015;
+
+        p.userData.life -= dt;
+        if (p.userData.life <= 0 || p.position.y < -40) {
+            scene.remove(p);
+            cutPieces.splice(i, 1);
+        }
+    }
+}
+
+function animate(time) {
+    requestAnimationFrame(animate);
+    const dt = 0.016;
+
+    if (active && active.state === "slide") {
+        if (active.axis === "x") {
+            active.x += active.speed * active.dir;
+            if (Math.abs(active.x) > 18) active.dir *= -1;
+            active.mesh.position.x = active.x;
+        } else {
+            active.z += active.speed * active.dir;
+            if (Math.abs(active.z) > 18) active.dir *= -1;
+            active.mesh.position.z = active.z;
+        }
+    }
+
+    // camera follow
+    if (blocks.length) {
+        const top = blocks[blocks.length - 1];
+        camera.position.y = THREE.MathUtils.lerp(
+            camera.position.y,
+            top.y + CAMERA_OFFSET_Y,
+            0.08
+        );
+    }
+
+    // pieces
+    updatePieces(dt);
+
+    // background color
+    renderer.setClearColor(new THREE.Color().setHSL(0.55 + score / 120, 0.55, 0.44));
+
+    renderer.render(scene, camera);
+}
+
+//
+// START
+//
+setupThree();
+startGame();
+animate(performance.now());
+</script>
+
+
+<audio id="stackSound" src="sounds/game-start-317318.mp3" preload="auto"></audio>
+<audio id="loseSound" src="sounds/wood_thump.wav" preload="auto"></audio>
+
+</body>
+</html>
